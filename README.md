@@ -27,6 +27,7 @@ partition logique `system_a` est remplacée dans une copie reconstruite de
 - [Procédure complète](docs/PROCEDURE.md)
 - [Récupération en cas d'échec](docs/RECOVERY.md)
 - [Correctif double-tap-to-wake validé](docs/DT2W.md)
+- [Correctif du lecteur d'empreinte validé](docs/FINGERPRINT.md)
 - [Empreintes et versions exactes](CHECKSUMS.md)
 - [Cadre légal et publication](docs/LEGAL-FR.md)
 - [Attributions des projets amont](NOTICE.md)
@@ -34,6 +35,8 @@ partition logique `system_a` est remplacée dans une copie reconstruite de
 - `patches/` : correctifs minimaux appliqués aux outils open source
 - `dt2w/` et `scripts/04-*`/`05-*` : fichiers et automatisation du réveil par
   double appui, sans binaire lourd
+- `fingerprint/` et `scripts/06-*`/`07-*` : activation du lecteur d'empreinte ;
+  la copie d'overlay est reconstruite depuis le téléphone, sans binaire suivi
 
 ## Refaire l'installation
 

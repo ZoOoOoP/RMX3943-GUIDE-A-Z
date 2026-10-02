@@ -7,6 +7,8 @@
   contenant des composants Android Open Source Project avec leurs avis Apache
   2.0. Le correctif fourni cible le commit
   `b7b5c09916ab88074692006db7dab34256da6e24`.
+- [Apktool](https://github.com/iBotPeaches/Apktool), Apache-2.0, téléchargé par
+  `scripts/06-install-fingerprint.sh` en version `2.10.0` et non redistribué.
 - [GSI LineageOS d'Andy Yan](https://sourceforge.net/projects/andyyan-gsi/files/lineage-22-light/),
   référencée mais non redistribuée.
 

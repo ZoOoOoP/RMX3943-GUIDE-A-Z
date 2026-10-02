@@ -10,6 +10,8 @@ doivent pas être employés sans nouvelle analyse.
 |---|---|
 | Penumbra / Antumbra | commit `f72152076bb4c0a3fd0f2febefdde40935a2e4c5` (`v2.0.0`) |
 | android-lptools | commit `b7b5c09916ab88074692006db7dab34256da6e24`, branche `android-14` |
+| apktool | `2.10.0`, SHA-256 `c0350abbab5314248dfe2ee0c907def4edd14f6faef1f5d372d3d4abd28f0431` |
+| apktool | `2.10.0`, SHA-256 `c0350abbab5314248dfe2ee0c907def4edd14f6faef1f5d372d3d4abd28f0431` |
 
 ## Fichiers privés
 
@@ -28,6 +30,16 @@ La GSI validée est
 GApps (`g`), sans superutilisateur (`N`), signée par le mainteneur. Le fichier
 compressé est disponible dans le dossier officiel
 [Andy Yan GSI / lineage-22-light](https://sourceforge.net/projects/andyyan-gsi/files/lineage-22-light/).
+
+## Fichier lu sur le téléphone
+
+| Fichier | Octets | SHA-256 |
+|---|---:|---|
+| `framework-res__lineage_gsi_arm64_gN__auto_generated_rro_product.apk` (overlay GSI d'origine) | 4822392 | `a085389b07d81ad10a3ca465ecb3bb8c7a6e50d7df378e116f3631de147bd95b` |
+
+`scripts/06-install-fingerprint.sh` refuse de continuer si cet overlay diffère.
+La copie reconstruite n'a pas d'empreinte fixe : elle est signée avec une clé
+jetable générée localement.
 
 ## Fichiers produits
 
