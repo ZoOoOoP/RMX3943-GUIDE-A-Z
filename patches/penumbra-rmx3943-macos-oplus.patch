@@ -1,0 +1,234 @@
+diff --git a/core/src/da/xml/exts.rs b/core/src/da/xml/exts.rs
+index 3e5bd8e..8c43793 100644
+--- a/core/src/da/xml/exts.rs
++++ b/core/src/da/xml/exts.rs
+@@ -7,6 +7,7 @@ use acon::{MMIO, SoC};
+ use hacc::DaEntry;
+ use log::{debug, info, warn};
+ use penumbra_macros::XmlCommand;
++use std::io::BufReader;
+ use wincode::SchemaWrite;
+ 
+ use crate::da::extensions::{KeyDeriveId, KeyDeriveParams, KeySize, SejParams};
+@@ -144,6 +145,21 @@ pub struct ExtRpmbWrite {
+     sectors_count: u32,
+ }
+ 
++// Some Oplus DAs register the RSC handler before HeapBait replaces its
++// implementation with the extension loader. The live handler is patched, but
++// its original command name remains in the DA's command table. Use it as a
++// fallback when the newly injected CMD:BOOT-TO name is not registered.
++#[derive(XmlCommand)]
++#[xmlcmd(name = "SET-RSC")]
++struct SetRscBoot {
++    #[xml(tag = "at_address", fmt = "0x{at_addr:x}")]
++    at_addr: u64,
++    #[xml(tag = "jmp_address", fmt = "0x{jmp_addr:x}")]
++    jmp_addr: u64,
++    #[xml(tag = "source_file", value = "MEM://0x0:0x0")]
++    host_offset: &'static str,
++}
++
+ pub fn boot_extensions<P: MtkPort>(xml: &mut Xml, port: &mut P, da: &DaEntry<'_>) -> Result<bool> {
+     let Some(chip) = xml.get_devinfo().chip() else {
+         warn!("Failed to get chip info, continuing without extensions");
+@@ -163,8 +179,17 @@ pub fn boot_extensions<P: MtkPort>(xml: &mut Xml, port: &mut P, da: &DaEntry<'_>
+     info!("Uploading XML DA extensions to 0x{:08X} (0x{:X} bytes)", ext_addr, ext_size);
+ 
+     if xml.boot_to(port, ext_addr, &ext_data).is_err() {
+-        warn!("Failed to upload XML extensions, continuing without extensions");
+-        return Ok(false);
++        debug!("CMD:BOOT-TO unavailable; retrying patched handler as CMD:SET-RSC");
++        let cmd = SetRscBoot::new(ext_addr as u64, ext_addr as u64);
++        if xml.send_cmd(port, &cmd).is_err()
++            || xml
++                .download_data(port, ext_data.len(), BufReader::new(ext_data.as_slice()), NOOP_PROGRESS)
++                .is_err()
++            || xml.lifetime_ack(port, XmlCmdLifetime::CmdEnd).is_err()
++        {
++            warn!("Failed to upload XML extensions, continuing without extensions");
++            return Ok(false);
++        }
+     }
+ 
+     if xmlcmd!(xml, port, ExtAck).is_err() {
+diff --git a/core/src/da/xml/patch.rs b/core/src/da/xml/patch.rs
+index 0459f9a..1184495 100644
+--- a/core/src/da/xml/patch.rs
++++ b/core/src/da/xml/patch.rs
+@@ -88,6 +88,51 @@ pub fn patch_boot_to(da: &mut [u8], analyzer: &Analyzer) -> Result<bool> {
+ fn patch_security(da: &mut [u8], analyzer: &Analyzer) -> Result<bool> {
+     patch_sec_policy(da, analyzer)?;
+     patch_sbc(da, analyzer)?;
++    patch_oplus_security(da, analyzer)?;
++    Ok(true)
++}
++
++fn patch_oplus_security(da: &mut [u8], analyzer: &Analyzer) -> Result<bool> {
++    if !matches!(analyzer, Analyzer::Arm(_)) {
++        return Ok(false);
++    }
++
++    // Oplus wraps the generic DA policy with an additional vendor check.
++    // Returning success here lets the existing command-registration routine
++    // expose the normal read/boot commands after HeapBait reruns it.
++    if let Some(off) = analyzer.fn_from_str("cust_security_verify_sec_policy") {
++        patch(da, off, FORCE_RETURN_ARM)?;
++        info!("Patched Oplus security policy verification.");
++    }
++
++    // Older Oplus XML DAs gate command registration on a global permission
++    // byte. The function containing the diagnostic below loads its address
++    // with adjacent ARM MOVW/MOVT instructions 0x28 bytes before the xref.
++    if let Some(xref) = analyzer.str_xref("[oplus] do not get oplus permission\n") {
++        let insn_off = xref.saturating_sub(0x28);
++        if insn_off + 8 <= da.len() {
++            let movw = u32::from_le_bytes(da[insn_off..insn_off + 4].try_into().unwrap());
++            let movt = u32::from_le_bytes(da[insn_off + 4..insn_off + 8].try_into().unwrap());
++            let rd_w = (movw >> 12) & 0xF;
++            let rd_t = (movt >> 12) & 0xF;
++            let is_movw = movw & 0x0FF00000 == 0x03000000;
++            let is_movt = movt & 0x0FF00000 == 0x03400000;
++
++            if is_movw && is_movt && rd_w == rd_t {
++                let lo = ((movw >> 4) & 0xF000) | (movw & 0xFFF);
++                let hi = ((movt >> 4) & 0xF000) | (movt & 0xFFF);
++                let address = (hi << 16) | lo;
++                if let Some(base) = analyzer.off_to_va(0) {
++                    let flag_off = (address as u64).saturating_sub(base) as usize;
++                    if flag_off + 4 <= da.len() {
++                        patch(da, flag_off, &[0xFF, 0x00, 0x00, 0x00])?;
++                        info!("Patched Oplus command allowance flag.");
++                    }
++                }
++            }
++        }
++    }
++
+     Ok(true)
+ }
+ 
+diff --git a/core/src/port/backend/libusb_backend.rs b/core/src/port/backend/libusb_backend.rs
+index dbd7b2c..f9749d0 100644
+--- a/core/src/port/backend/libusb_backend.rs
++++ b/core/src/port/backend/libusb_backend.rs
+@@ -53,7 +53,13 @@ impl LibUsbMTKPort {
+     }
+ 
+     fn find_bulk_endpoints(device: &Device<Context>) -> Option<(u8, u8)> {
+-        let config = device.active_config_descriptor().ok()?;
++        let config = match device.active_config_descriptor() {
++            Ok(config) => config,
++            Err(e) => {
++                debug!("Could not read active USB configuration: {:?}", e);
++                return None;
++            }
++        };
+         let mut in_ep = None;
+         let mut out_ep = None;
+ 
+@@ -124,7 +130,13 @@ impl LibUsbMTKPort {
+             .unwrap_or(ConnectionType::Preloader);
+ 
+         let port_name = format!("USB {:04X}:{:04X} (libusb)", vid, pid);
+-        let handle = device.open().ok()?;
++        let handle = match device.open() {
++            Ok(handle) => handle,
++            Err(e) => {
++                debug!("Could not open {}: {:?}", port_name, e);
++                return None;
++            }
++        };
+         let (in_endpoint, out_endpoint) = Self::find_bulk_endpoints(device)?;
+ 
+         Some(Self::new(handle, connection_type, port_name, in_endpoint, out_endpoint))
+@@ -142,6 +154,7 @@ impl LibUsbMTKPort {
+ 
+             let dev_vid = descriptor.vendor_id();
+             let dev_pid = descriptor.product_id();
++            debug!("libusb enumerated {:04X}:{:04X}", dev_vid, dev_pid);
+ 
+             if vid.is_none_or(|v| v == dev_vid)
+                 && pid.is_none_or(|p| p == dev_pid)
+@@ -169,7 +182,9 @@ impl MtkPort for LibUsbMTKPort {
+         }
+ 
+         for interface in 0..=1 {
+-            #[cfg(not(target_os = "windows"))]
++            // libusb's kernel-driver query is unsupported on macOS. Claiming
++            // the CDC interfaces directly works there; detach only on Linux.
++            #[cfg(target_os = "linux")]
+             {
+                 match self.handle.kernel_driver_active(interface) {
+                     Ok(true) => {
+@@ -184,7 +199,16 @@ impl MtkPort for LibUsbMTKPort {
+                 }
+             }
+ 
+-            self.handle.claim_interface(interface)?;
++            // macOS may keep ownership of the CDC control interface (0),
++            // while the bulk data interface (1) remains claimable. The
++            // preloader protocol only needs the latter; PyUSB/mtkclient uses
++            // the same fallback.
++            if let Err(e) = self.handle.claim_interface(interface) {
++                if interface != 0 {
++                    return Err(e.into());
++                }
++                debug!("Could not claim optional CDC control interface: {:?}", e);
++            }
+         }
+ 
+         if self.conn_type != ConnectionType::Brom
+diff --git a/tui/Cargo.toml b/tui/Cargo.toml
+index 7f829ab..38e33fd 100644
+--- a/tui/Cargo.toml
++++ b/tui/Cargo.toml
+@@ -10,7 +10,7 @@ description = "A TUI and CLI for interacting with MediaTek based devices."
+ 
+ [dependencies]
+ ratatui = { version = "0.29.0", optional = true }
+-penumbra = { path = "../core", package = "penumbra-mtk", default-features = false, features = ["libusb", "localslakeyring", "exploits"] }
++penumbra = { path = "../core", package = "penumbra-mtk", default-features = false, features = ["nusb", "libusb", "localslakeyring", "exploits"] }
+ env_logger = "0.11.8"
+ ratatui-explorer = { version = "0.2.1", optional = true }
+ ratatui-textarea = { version = "0.9.2", optional = true }
+diff --git a/tui/src/cli/helpers/device.rs b/tui/src/cli/helpers/device.rs
+index c71340a..fb497b4 100644
+--- a/tui/src/cli/helpers/device.rs
++++ b/tui/src/cli/helpers/device.rs
+@@ -7,7 +7,7 @@ use std::thread;
+ use std::time::{Duration, Instant};
+ 
+ use anyhow::Result;
+-use log::info;
++use log::{debug, info};
+ use penumbra::port::{ConnectionType, PortType};
+ use penumbra::{DevInfoData, Device, DeviceBuilder, MMIO, MtkPort, SoC};
+ 
+@@ -32,14 +32,19 @@ pub fn setup_device<'a>(
+ 
+     info!("Waiting for MTK device...");
+     let mtk_port = loop {
+-        if let Ok(Some(mut port)) = PortType::find_and_open(args.vid, args.pid, args.backend) {
+-            if state.flash_mode != 0 {
+-                port.set_connection_type(ConnectionType::Da)?;
++        match PortType::find_and_open(args.vid, args.pid, args.backend) {
++            Ok(Some(mut port)) => {
++                if state.flash_mode != 0 {
++                    port.set_connection_type(ConnectionType::Da)?;
++                }
++
++                info!("Found MTK port: {}", port.get_port_name());
++                break port;
+             }
+-
+-            info!("Found MTK port: {}", port.get_port_name());
+-            break port;
+-        } else if last_seen.elapsed() > timeout {
++            Ok(None) => {}
++            Err(e) => debug!("MTK port not ready: {e:?}"),
++        }
++        if last_seen.elapsed() > timeout {
+             state.reset()?;
+             last_seen = Instant::now();
+         }

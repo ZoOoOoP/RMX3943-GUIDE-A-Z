@@ -1,0 +1,3 @@
+# Keep the stock Oplus black-screen gesture enabled after Android boots.
+on property:sys.boot_completed=1
+    write /proc/touchpanel/double_tap_enable 1

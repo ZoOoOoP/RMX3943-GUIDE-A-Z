@@ -1,0 +1,29 @@
+diff --git a/lib/zlib/zutil.h b/lib/zlib/zutil.h
+index 4425bcf..45bf18e 100755
+--- a/lib/zlib/zutil.h
++++ b/lib/zlib/zutil.h
+@@ -145,7 +145,7 @@ extern z_const char * const z_errmsg[10]; /* indexed by 2-zlib_error */
+ #  endif
+ #endif
+ 
+-#if defined(MACOS) || defined(TARGET_OS_MAC)
++#if (defined(MACOS) || defined(TARGET_OS_MAC)) && !defined(__APPLE__)
+ #  define OS_CODE  7
+ #  ifndef Z_SOLO
+ #    if defined(__MWERKS__) && __dest_os != __be_os && __dest_os != __win32_os
+diff --git a/make.sh b/make.sh
+index 4992217..68b5e21 100755
+--- a/make.sh
++++ b/make.sh
+@@ -5,7 +5,10 @@ CC=clang
+ CPP=clang++
+ AR=ar
+ STRIP=strip
+-CFLAGS=-static
++case "$OSTYPE" in
++  darwin*) CFLAGS="" ;;
++  *) CFLAGS=-static ;;
++esac
+ 
+ cd lib
+ cd liblog

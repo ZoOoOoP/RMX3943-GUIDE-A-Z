@@ -1,0 +1,2 @@
+# The Oplus driver reports a recognized double tap as Linux KEY_F4 / scan 62.
+key 62 WAKEUP WAKE
